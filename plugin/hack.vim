@@ -21,6 +21,10 @@ if !exists('g:hack#hh_client')
   let g:hack#hh_client = 'hh_client'
 endif
 
+if !exists('g:hack#hh_client_retries')
+  let g:hack#hh_client_retries = '1'
+endif
+
 " Require the hh_client executable.
 if !executable(g:hack#hh_client)
   finish
@@ -67,7 +71,7 @@ function! <SID>HackClientCall(extra_args)
   let hh_command = [
   \ g:hack#hh_client,
   \ '--from', 'vim',
-  \ '--retries', '1',
+  \ '--retries', g:hack#hh_client_retries,
   \ '--retry-if-init', 'false'
   \ ] + a:extra_args
 
@@ -115,15 +119,58 @@ function! hack#find_refs(fn)
   call <SID>HackClientCall(['--find-refs', a:fn])
 endfunction
 
-" Get the Hack type at the current cursor position.
-function! hack#get_type()
-  let pos = fnameescape(expand('%')).':'.line('.').':'.col('.')
-  let cmd = g:hack#hh_client.' --type-at-pos '.pos
+python << EOF
+import json, subprocess, vim
 
-  let output = 'HackType: '.system(cmd)
-  let output = substitute(output, '\n$', '', '')
-  echo output
-endfunction
+def hh(*args):
+  proc = subprocess.Popen([
+    vim.vars['hack#hh_client'],
+    '--from', 'vim',
+    '--retries', vim.vars['hack#hh_client_retries'],
+    '--retry-if-init', 'false',
+    '--json',
+    ] + list(args),
+    stdout=subprocess.PIPE,
+    stderr=subprocess.PIPE)
+  stdout, _stderr = proc.communicate()
+  try:
+    return json.loads(stdout)
+  except ValueError:
+    print(stdout)
+    raise
+
+def vim_get_pos():
+  return vim.eval("fnameescape(expand('%')).':'.line('.').':'.col('.')")
+
+def hack_get_type():
+  """ Get the Hack type at the current cursor position. """
+  pos = vim_get_pos()
+  try:
+    output = hh('--type-at-pos', pos)
+    if output['type'] is None:
+      print('No type at this position')
+    else:
+      print(output['type'])
+  except:
+    print 'Failed to get type; hh_server may be busy'
+  return 0
+
+def hack_goto_def():
+  """ Jump to the definition of the expression under the cursor. """
+  pos = vim_get_pos()
+  try:
+    output = hh('--type-at-pos', pos)
+    def_pos = output['pos']
+    if def_pos is None:
+      print('Nothing to jump to from this position')
+    else:
+      vim.command('edit +%d %s' % (def_pos['line'], def_pos['filename']))
+  except vim.error as e:
+    print e
+  except Exception as e:
+    print 'Failed to jump to definition; hh_server may be busy'
+  return 0
+EOF
 
 " Toggle auto-typecheck.
 function! hack#toggle()
@@ -158,9 +205,10 @@ function! hack#format(from, to)
 endfunction
 
 " Commands and auto-typecheck.
-command! HackToggle call hack#toggle()
-command! HackMake   call hack#typecheck()
-command! HackType   call hack#get_type()
+command! HackToggle  call hack#toggle()
+command! HackMake    call hack#typecheck()
+command! HackType    call pyeval('hack_get_type()')
+command! HackGotoDef call pyeval('hack_goto_def()')
 command! -range=% HackFormat call hack#format(<line1>, <line2>)
 command! -nargs=1 HackFindRefs call hack#find_refs(<q-args>)
 
